@@ -1124,6 +1124,11 @@ function reportError() {
   font-family: var(--font-ui);
   background: #04070c;
   user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.overlay-root * {
+  -webkit-app-region: no-drag;
 }
 
 .stage-image,

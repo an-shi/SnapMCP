@@ -1,6 +1,6 @@
 [package]
 name = "snapmcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tiny screen capture & annotation tool with a built-in MCP server"
 authors = ["SnapMCP contributors"]
 edition = "2021"

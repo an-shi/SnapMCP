@@ -20,6 +20,35 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+/// The single-instance plugin keeps a tiny 18x18 transparent event window at
+/// the top-left of the virtual screen. Move that invisible helper away from
+/// the corner while preserving WM_COPYDATA, reducing one source of hit-test
+/// interference when a screenshot selection starts at the extreme top-left.
+#[cfg(target_os = "windows")]
+fn park_single_instance_helper(app: &tauri::AppHandle) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    let id = app.config().identifier.clone();
+    let class: Vec<u16> = format!("{id}-sic").encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = format!("{id}-siw").encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                -32_000,
+                -32_000,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            diag::info("Parked single-instance helper window off-screen");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     diag::init();
@@ -102,6 +131,9 @@ pub fn run() {
             if let Err(err) = tray::create(app.handle()) {
                 diag::error(format!("Cannot create system tray: {err}"));
             }
+
+            #[cfg(target_os = "windows")]
+            park_single_instance_helper(app.handle());
 
             if show_window {
                 window::show_settings(app.handle());

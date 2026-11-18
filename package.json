@@ -1,7 +1,7 @@
 {
   "name": "snapmcp",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "A tiny screen capture & annotation desktop app with a built-in MCP server.",
   "engines": {

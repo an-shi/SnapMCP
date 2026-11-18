@@ -38,12 +38,101 @@ fn new_capture_id() -> String {
     )
 }
 
+#[cfg(target_os = "windows")]
+fn force_hide_window(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_hide_window(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn disable_overlay_window_chrome(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER,
+        WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
+        WS_EX_WINDOWEDGE, WS_HSCROLL, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+        WS_THICKFRAME, WS_VSCROLL,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+            let blocked = WS_BORDER.0
+                | WS_CAPTION.0
+                | WS_DLGFRAME.0
+                | WS_THICKFRAME.0
+                | WS_SYSMENU.0
+                | WS_MINIMIZEBOX.0
+                | WS_MAXIMIZEBOX.0
+                | WS_VSCROLL.0
+                | WS_HSCROLL.0;
+            SetWindowLongPtrW(hwnd, GWL_STYLE, ((style & !blocked) | WS_POPUP.0) as isize);
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            let blocked_ex = WS_EX_DLGMODALFRAME.0
+                | WS_EX_WINDOWEDGE.0
+                | WS_EX_CLIENTEDGE.0
+                | WS_EX_STATICEDGE.0;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style & !blocked_ex) as isize);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn disable_overlay_window_chrome(_window: &tauri::WebviewWindow) {}
+
 async fn hide_other_windows(app: &AppHandle) {
+    let mut hidden_something = false;
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.hide();
+        // Tauri's async hide and the DWM compositor can lag behind the
+        // capture. Hide through Win32 as well, then give the compositor a
+        // generous window to drop the last frame.
+        force_hide_window(&win);
+        hidden_something = true;
+        for _ in 0..20 {
+            if !win.is_visible().unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        diag::info("Settings window hidden before capture");
     }
-    // Give the compositor a moment to remove the window from the screen.
-    tokio::time::sleep(Duration::from_millis(140)).await;
+    tokio::time::sleep(Duration::from_millis(if hidden_something {
+        450
+    } else {
+        40
+    }))
+    .await;
+}
+
+/// Pin the overlay to the selected monitor. The overlay is deliberately a
+/// borderless top-level window with all caption/resize styles removed, so a
+/// drag starting at the screen edge is delivered to the WebView selection
+/// canvas instead of moving the native window.
+fn apply_overlay_bounds(window: &tauri::WebviewWindow, display: &MonitorSnapshot) {
+    let _ = window.set_position(PhysicalPosition::new(display.x, display.y));
+    let _ = window.set_size(PhysicalSize::new(
+        display.width.max(1),
+        display.height.max(1),
+    ));
+    let _ = window.set_resizable(false);
+    let _ = window.set_always_on_top(true);
+    disable_overlay_window_chrome(window);
 }
 
 fn close_overlay_window(app: &AppHandle) {
@@ -197,6 +286,8 @@ async fn start_overlay(
                 .title("SnapMCP")
                 .decorations(false)
                 .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .visible(false)
@@ -206,12 +297,7 @@ async fn start_overlay(
                 .build()
                 .map_err(|e| format!("Failed to open the capture overlay: {e}"))?;
 
-        let _ = window.set_position(PhysicalPosition::new(display.x, display.y));
-        let _ = window.set_size(PhysicalSize::new(
-            display.width.max(1),
-            display.height.max(1),
-        ));
-        let _ = window.set_always_on_top(true);
+        apply_overlay_bounds(&window, &display);
 
         let state_for_events = Arc::clone(&state);
         let id_for_events = id.clone();
@@ -310,8 +396,20 @@ pub fn ready(app: &AppHandle) -> Result<(), String> {
     let win = app
         .get_webview_window("overlay")
         .ok_or_else(|| "Screenshot window is not ready".to_string())?;
+    let display = app
+        .state::<Arc<AppState>>()
+        .pending_overlay
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|pending| pending.display.clone()));
+    if let Some(display) = display {
+        // Re-assert geometry immediately before reveal, in case Windows moved
+        // or resized the hidden window while it was being created.
+        apply_overlay_bounds(&win, &display);
+    }
     win.show()
         .map_err(|e| format!("Failed to show the screenshot overlay: {e}"))?;
+    disable_overlay_window_chrome(&win);
     let _ = win.set_always_on_top(true);
     win.set_focus()
         .map_err(|e| format!("Failed to focus the screenshot overlay: {e}"))?;

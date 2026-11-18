@@ -248,7 +248,7 @@ const MOCK_SETTINGS = {
 
 export function mockStatus(): AppStatus {
   return {
-    version: "0.1.0",
+    version: "0.1.1",
     mcp: {
       running: true,
       port: 37621,
