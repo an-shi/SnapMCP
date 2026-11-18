@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "snapmcp": {
+      "command": "C:\\Program Files\\SnapMCP\\SnapMCP.exe",
+      "args": ["--mcp-stdio"]
+    }
+  }
+}
